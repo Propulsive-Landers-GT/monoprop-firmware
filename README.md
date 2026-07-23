@@ -4,7 +4,7 @@
 that runs on the microcontrollers.
 
 > **Provenance:** Split out of the monolithic
-> [`Propulsive-Landers-GT/MonopropUAV`](https://github.com/Propulsive-Landers-GT/MonopropUAV)
+> [`GTPL-Testing/MonopropUAV`](https://github.com/GTPL-Testing/MonopropUAV)
 > repository during the July 2026 reorganization. Full commit history for these
 > files is preserved. See the [GTPL-test root README](../README.md) for the
 > complete old→new mapping.
