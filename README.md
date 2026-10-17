@@ -8,6 +8,7 @@ that runs on the microcontrollers.
 | Path | What it is |
 |------|------------|
 | `firmware/` | Primary [PlatformIO](https://platformio.org/) project: `src/` (incl. `CustomLinear/`), `include/`, `lib/`, `test/`, `platformio.ini`, helper shell scripts |
+| [`esp32Firmware/`](esp32Firmware/README.md) | UART-to-UDP bridge between the Teensy and ground station |
 | `AvionicsFirmware/` | VCSEL sensor Arduino sketch draft |
 | `include/`, `lib/` | Top-level PlatformIO include/lib placeholders |
 | `build/` | Committed CMake build tree (kept intact, not regenerated) |
