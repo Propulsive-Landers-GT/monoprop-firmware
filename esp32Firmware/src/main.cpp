@@ -8,7 +8,7 @@
 // FIELD CONFIGURATION
 // ============================================================================
 // Transparent UART <-> UDP bridge between Teensy and ground station.
-// TODO: Confirm credentials, addresses, ports, UART settings, and framing.
+// TODO: Confirm Postcard COBS compatibility.
 // Changes to these values require rebuilding and uploading the firmware.
 
 // Wi-Fi credentials and hostname
@@ -56,9 +56,9 @@ constexpr uint32_t SERVICE_RETRY_MS = 2000;
 constexpr uint32_t DIAGNOSTIC_INTERVAL_MS = 5000;
 
 // ============================================================================
-// UART -> UDP PACKAGING - SELECT AFTER AGREEING THE ENDPOINT INTERFACE
+// UART -> UDP PACKAGING
 // ============================================================================
-// TODO: Agree framing, maximum frame size and recovery after missing bytes.
+// Endpoints must use Postcard COBS frames terminated by 0x00.
 // This bridge does not define telemetry structures or decode command formats.
 enum PackagingMode : uint8_t {
   MODE_IDLE_TIMEOUT, // Provisional byte batching after software-read inactivity.
@@ -68,7 +68,7 @@ enum PackagingMode : uint8_t {
 
 // Select the packaging mode here or override it with a build flag.
 #ifndef BRIDGE_PACKAGING_MODE
-#define BRIDGE_PACKAGING_MODE MODE_IDLE_TIMEOUT
+#define BRIDGE_PACKAGING_MODE MODE_DELIMITER
 #endif
 constexpr PackagingMode PACKAGING_MODE = BRIDGE_PACKAGING_MODE;
 
@@ -78,8 +78,8 @@ constexpr PackagingMode PACKAGING_MODE = BRIDGE_PACKAGING_MODE;
 constexpr uint32_t IDLE_GAP_US = 500;
 
 // DELIMITER:
-// Send when the specified ending byte is received.
-constexpr uint8_t FRAME_DELIMITER = '\n';
+// Forward the complete encoded frame, including Postcard's COBS terminator.
+constexpr uint8_t FRAME_DELIMITER = 0x00;
 
 // FIXED SIZE: replace 64 with the agreed serialized frame size
 constexpr size_t FIXED_PACKET_SIZE = 64;
@@ -117,6 +117,7 @@ IPAddress boundIP;
 // Downlink: a batch assembled from Teensy bytes, up to the UDP payload cap.
 uint8_t teensyRxBuf[MAX_UDP_PAYLOAD];
 size_t teensyRxLen = 0;
+bool discardDelimiterFrame = false;
 uint32_t lastByteMicros = 0;
 // Uplink: one whole accepted datagram, forwarded incrementally. The offset
 // tracks bytes already handed to the UART driver, not acknowledged by Teensy.
@@ -176,6 +177,7 @@ void onWiFiEvent(WiFiEvent_t event) {
 void discardBufferedData() {
   stats.discardedUART += teensyRxLen;
   teensyRxLen = 0;
+  discardDelimiterFrame = false;
   stats.discardedUplink += groundRxLen - groundTxOffset;
   groundRxLen = groundTxOffset = 0;
 }
@@ -288,8 +290,6 @@ void flushDownlink() {
       ++stats.txPackets;
     } else {
       ++stats.txErrors;
-      stopServices();
-      lastSocketAttempt = millis();
     }
   }
 
@@ -305,19 +305,32 @@ void serviceDownlink() {
     const int b = Serial1.read();
     if (b < 0) break;
 
-    teensyRxBuf[teensyRxLen++] = uint8_t(b);
     ++stats.uartRxBytes;
     lastByteMicros = micros();
 
-    if (teensyRxLen == MAX_UDP_PAYLOAD &&
-        PACKAGING_MODE == MODE_DELIMITER &&
-        b != FRAME_DELIMITER) {
-      ++stats.batchSplits;
+    if constexpr (PACKAGING_MODE == MODE_DELIMITER) {
+      if (discardDelimiterFrame) {
+        ++stats.discardedUART;
+        if (b == FRAME_DELIMITER) discardDelimiterFrame = false;
+        continue;
+      }
+    }
+
+    teensyRxBuf[teensyRxLen++] = uint8_t(b);
+
+    if constexpr (PACKAGING_MODE == MODE_DELIMITER) {
+      if (teensyRxLen == MAX_UDP_PAYLOAD && b != FRAME_DELIMITER) {
+        // discard the whole frame
+        ++stats.batchSplits;
+        stats.discardedUART += teensyRxLen;
+        teensyRxLen = 0;
+        discardDelimiterFrame = true;
+        continue;
+      }
     }
 
     if (shouldFlushToUDP(uint8_t(b), true)) {
       flushDownlink();
-      return;
     }
   }
 
@@ -505,7 +518,6 @@ void loop() {
   if (linkReady && udpReady && uartReady) {
     serviceDownlink();
 
-    // Downlink errors may close the UDP socket.
     if (udpReady) serviceUplink();
   } else {
     // Discard stale data while the bridge is unavailable.
@@ -514,5 +526,4 @@ void loop() {
   }
 
   reportDiagnostics(now);
-  delay(1);
 }
