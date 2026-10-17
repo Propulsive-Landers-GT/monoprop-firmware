@@ -17,22 +17,27 @@ constexpr char WIFI_PASSWORD[] = "YOUR_ROUTER_PASSWORD";
 constexpr char MDNS_HOSTNAME[] = "monoprop-bridge";
 
 // ESP32 network configuration (true = DHCP, false = static IP)
-constexpr bool USE_ESP_DHCP = true;
+// Match Monoprop/GroundControl's current ESP32 destination
+constexpr bool USE_ESP_DHCP = false;
 const IPAddress ESP_STATIC_IP(192, 168, 1, 50);
+// verify gateway and subnet against the field router.
 const IPAddress ROUTER_GATEWAY(192, 168, 1, 1);
 const IPAddress ROUTER_SUBNET(255, 255, 255, 0);
 
 // Ground station destination
 // false = fixed IP, true = learn IP from incoming UDP packets
+// use the ground laptop's actual address
 constexpr bool USE_DYNAMIC_GROUND_IP = false;
 const IPAddress GROUND_STATIC_IP(192, 168, 1, 100);
 
-// UDP ports
-constexpr uint16_t ESP_LISTEN_PORT = 14550;
-constexpr uint16_t GROUND_TARGET_PORT = 14551;
+// UDP ports matching the current Monoprop/GroundControl defaults
+constexpr uint16_t ESP_LISTEN_PORT = 8888;
+constexpr uint16_t GROUND_TARGET_PORT = 9999;
 
 // Teensy UART configuration (3.3V logic, crossed TX/RX, common GND)
-constexpr uint32_t UART_BAUD_RATE = 921600;
+// Baud matches Monoprop/Drone.
+// Teensy TX pin 1 -> ESP RX GPIO16; ESP TX GPIO17 -> Teensy RX pin 0.
+constexpr uint32_t UART_BAUD_RATE = 115200;
 constexpr int8_t ESP_RX_PIN = 16;
 constexpr int8_t ESP_TX_PIN = 17;
 
