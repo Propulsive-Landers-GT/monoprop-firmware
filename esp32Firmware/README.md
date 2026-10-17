@@ -52,7 +52,7 @@ These settings match the existing Monoprop implementation where possible. Values
 | Router gateway | 192.168.1.1 (provisional) |
 | Subnet mask | 255.255.255.0 (provisional) |
 | Maximum UDP payload | 1024 bytes |
-| UART packaging | Idle timeout (provisional) |
+| UART packaging | Postcard COBS frames, terminated by `0x00` |
 
 The Wi-Fi SSID and password are still placeholders. Set the actual credentials before testing.
 
@@ -62,21 +62,33 @@ The laptop's actual IP address also needs to be confirmed before telemetry can b
 
 ## UART Data Packaging
 
-The Teensy uses Postcard binary serialization for telemetry. The ESP32 forwards the bytes without decoding them.
+Use Postcard's built-in COBS serialization/deserialization at both endpoints.
+The ESP32 neither encodes nor decodes COBS or Postcard: it forwards encoded bytes
+unchanged, including the final `0x00` delimiter in each telemetry UDP datagram.
 
 Three UART-to-UDP packaging modes are currently available:
 
-- `MODE_IDLE_TIMEOUT` — Sends buffered data after a period without UART reads. Currently selected.
-- `MODE_DELIMITER` — Sends when a configured delimiter is received.
+- `MODE_IDLE_TIMEOUT` — Sends buffered data after a period without UART reads; does not preserve message boundaries.
+- `MODE_DELIMITER` — Currently selected, with `FRAME_DELIMITER = 0x00` for Postcard COBS.
 - `MODE_FIXED_SIZE` — Sends after collecting a configured number of bytes.
 
-**UART framing has not yet been finalized.** The current idle-timeout method does not guarantee that each UDP datagram contains exactly one telemetry message. This must be resolved with the flight-software team before end-to-end integration.
+Encoded frames must fit within 1024 bytes **including the delimiter**. An oversized
+UART frame is discarded through its next delimiter, rather than forwarded as
+partial UDP packets. The existing `splits` diagnostic counts these discarded
+oversized frames; `dropUART` counts their discarded bytes.
 
-UDP-to-UART forwarding passes accepted UDP payload bytes directly to the Teensy.
+UDP-to-UART forwarding passes accepted UDP payload bytes directly to the Teensy;
+the ground station must include the COBS terminator. The inspected Monoprop
+endpoints still use raw Postcard serialization and must be updated separately.
+This ESP32 change alone does not make them compatible. Endpoints must also
+recover from lost bytes or starting/reconnecting partway through a UART frame;
+the bridge does not validate COBS frames or guarantee alignment after a reset.
 
 ## Connection Handling and Diagnostics
 
-The firmware attempts to reconnect automatically when Wi-Fi is unavailable and restarts its UDP service as needed.
+The firmware attempts to reconnect automatically when Wi-Fi is unavailable and
+rebinds UDP after link/IP changes. A failed UDP send increments `txErrors` and
+discards only that downlink batch; the socket and network services stay open.
 
 Pending application data is discarded during connection resets rather than retransmitted later. UDP packets exceeding the configured maximum payload are rejected.
 
@@ -87,11 +99,15 @@ The status LED indicates Wi-Fi connectivity:
 
 The Serial Monitor displays periodic connection status, byte counts, packet counts, and error statistics. These are local diagnostics and do not confirm that data reached the destination.
 
+The main loop has no artificial delay. UART processing remains limited to
+`UART_WORK_PER_PASS` bytes per direction per pass, allowing multiple queued
+frames to be sent within that budget. Diagnostic output remains incremental.
+
 ## Integration Items
 
 The following still need to be confirmed:
 
-- UART framing and synchronization with the Teensy.
+- Implement the same Postcard COBS convention at both endpoints, including delimiter handling and resynchronization.
 - Ground station IP address and router configuration.
 - Final ESP32 hardware pin assignments.
 - Expected telemetry throughput and acceptable communication latency.
@@ -107,6 +123,8 @@ Before hardware integration, verify:
 3. Oversized UDP packets are rejected without affecting subsequent packets.
 4. Wi-Fi disconnection and reconnection do not cause stale data to be forwarded.
 5. Sustained bidirectional communication works without unexpected data loss.
+6. Back-to-back COBS frames retain their delimiters, and oversized UART frames are discarded without affecting the next frame.
+7. Injected UDP send failures leave services open; verify recovery and watchdog/task scheduling with the delay removed.
 
 A successful PlatformIO build confirms compilation, not hardware or end-to-end communication.
 
