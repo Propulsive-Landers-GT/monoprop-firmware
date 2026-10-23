@@ -4,6 +4,11 @@
 #include <ESPmDNS.h>
 #include <esp_wifi.h>
 
+#ifndef BRIDGE_ECHO_TEST
+#define BRIDGE_ECHO_TEST 0
+#endif
+constexpr bool ECHO_TEST = BRIDGE_ECHO_TEST != 0;
+
 // ============================================================================
 // FIELD CONFIGURATION
 // ============================================================================
@@ -12,13 +17,13 @@
 // Changes to these values require rebuilding and uploading the firmware.
 
 // Wi-Fi credentials and hostname
-constexpr char WIFI_SSID[] = "MONOPROP_FIELD_ROUTER";
-constexpr char WIFI_PASSWORD[] = "YOUR_ROUTER_PASSWORD";
+constexpr char WIFI_SSID[] = "24E";
+constexpr char WIFI_PASSWORD[] = "pancakes";
 constexpr char MDNS_HOSTNAME[] = "monoprop-bridge";
 
 // ESP32 network configuration (true = DHCP, false = static IP)
 // Match Monoprop/GroundControl's current ESP32 destination
-constexpr bool USE_ESP_DHCP = false;
+constexpr bool USE_ESP_DHCP = ECHO_TEST;
 const IPAddress ESP_STATIC_IP(192, 168, 1, 50);
 // verify gateway and subnet against the field router.
 const IPAddress ROUTER_GATEWAY(192, 168, 1, 1);
@@ -183,6 +188,7 @@ void discardBufferedData() {
 }
 
 void drainUART() {
+  if constexpr (ECHO_TEST) return;
   // Bounded even when Teensy transmits continuously; runs during startup too.
   for (size_t n = 0; n < UART_RX_BUF_SZ && Serial1.available() > 0; ++n) {
     if (Serial1.read() >= 0) ++stats.discardedUART;
@@ -399,6 +405,30 @@ void serviceUplink() {
   }
 }
 
+// Bench-only echo: return bytes to the sender's computer on its receiver port.
+// Never invoke the UART bridge or deserialize flight commands in this mode.
+void serviceEcho() {
+  const int size = udp.parsePacket();
+  if (size <= 0) return;
+  ++stats.rxPackets;
+  if (size_t(size) > MAX_UDP_PAYLOAD) {
+    ++stats.oversized;
+    udp.clear();
+    return;
+  }
+  const IPAddress sender = udp.remoteIP();
+  const int received = udp.read(groundRxBuf, size_t(size));
+  udp.clear();
+  if (received != size) {
+    ++stats.readErrors;
+    return;
+  }
+  const bool started = udp.beginPacket(sender, GROUND_TARGET_PORT) == 1;
+  const bool written = started && udp.write(groundRxBuf, size_t(received)) == size_t(received);
+  if (written && udp.endPacket() == 1) ++stats.txPackets;
+  else ++stats.txErrors;
+}
+
 // ============================================================================
 // PERIODIC DIAGNOSTICS
 // ============================================================================
@@ -412,12 +442,12 @@ void reportDiagnostics(uint32_t now) {
 
     const int len = snprintf(
         diagnosticText, sizeof(diagnosticText),
-        "[Bridge] link=%u udp=%u uart=%u resets=%lu retry=%lu "
+        "[Bridge] echo=%u link=%u udp=%u uart=%u resets=%lu retry=%lu "
         "bindErr=%lu mdnsErr=%lu configErr=%lu\n"
         "[Data] tx=%lu txErr=%lu rx=%lu oversize=%lu readErr=%lu "
         "uartRx=%lu uartTx=%lu dropUART=%lu dropUp=%lu "
         "noTarget=%lu splits=%lu\n",
-        linkReady, udpReady, uartReady,
+        ECHO_TEST, linkReady, udpReady, uartReady,
         (unsigned long)stats.linkResets,
         (unsigned long)stats.retries,
         (unsigned long)stats.bindErrors,
@@ -470,17 +500,19 @@ void setup() {
   digitalWrite(STATUS_LED_PIN, LOW);
   Serial.begin(115200);
 
-  // Configure UART buffers before starting communication.
-  const size_t rxSize = Serial1.setRxBufferSize(UART_RX_BUF_SZ);
-  const size_t txSize = Serial1.setTxBufferSize(UART_TX_BUF_SZ);
+  if constexpr (!ECHO_TEST) {
+    // Configure UART buffers before starting communication.
+    const size_t rxSize = Serial1.setRxBufferSize(UART_RX_BUF_SZ);
+    const size_t txSize = Serial1.setTxBufferSize(UART_TX_BUF_SZ);
 
-  Serial1.begin(UART_BAUD_RATE, SERIAL_8N1, ESP_RX_PIN, ESP_TX_PIN);
+    Serial1.begin(UART_BAUD_RATE, SERIAL_8N1, ESP_RX_PIN, ESP_TX_PIN);
 
-  uartReady = rxSize >= UART_RX_BUF_SZ &&
-              txSize >= UART_TX_BUF_SZ &&
-              bool(Serial1);
+    uartReady = rxSize >= UART_RX_BUF_SZ &&
+                txSize >= UART_TX_BUF_SZ &&
+                bool(Serial1);
 
-  if (!uartReady) ++stats.configErrors;
+    if (!uartReady) ++stats.configErrors;
+  }
 
   // Configure Wi-Fi and connection management.
   WiFi.onEvent(onWiFiEvent);
@@ -505,6 +537,9 @@ void setup() {
   }
 
   Serial.println("[Bridge] Starting...");
+  if constexpr (ECHO_TEST) {
+    Serial.println("[Echo] BENCH TEST ONLY: DHCP, UDP 8888 -> sender IP:9999; Teensy UART DISABLED");
+  }
 }
 
 // ============================================================================
@@ -514,6 +549,12 @@ void setup() {
 void loop() {
   const uint32_t now = millis();
   serviceNetwork(now);
+
+  if constexpr (ECHO_TEST) {
+    if (linkReady && udpReady) serviceEcho();
+    reportDiagnostics(now);
+    return;
+  }
 
   if (linkReady && udpReady && uartReady) {
     serviceDownlink();
